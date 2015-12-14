@@ -1,136 +1,155 @@
 #include <iostream>
 #include <signal.h>
 #include <math.h>
-#include "opencv2/opencv.hpp"
+#include <sys/time.h>
+
+#include <opencv2/opencv.hpp>
+
 #include "NerfSpiderControl.hpp"
 
-using namespace std;
-using namespace cv;
+cv::VideoCapture camera;
 
-double area;
-unsigned int i;
+bool running;
+pthread_t grabThread;
+pthread_mutex_t mutexLock;
 
-NerfSpiderControl spiderControl;
-VideoCapture capture(0);
-Mat img_cam, img_out;
-Mat img_gray, img_thres, img_canny, img_contours;
-
-vector<Point> poly;
-vector<Vec3f> circles;
-vector<vector<Point> > contours;
-
-bool running = false, flagA = false, flagB = false;
-int flagWalk=0, flagBarbette=0;
-
-void *barbetteFunc(void* cs)
-{
-    while(running)
-    {
-        if(flagA)
-        {
-            if(flagBarbette == 1)
-                spiderControl.barbetteRotate(1, 5);
-            else if(flagBarbette == -1)
-                spiderControl.barbetteRotate(-1, 5);
-            else
-                spiderControl.barbetteStop();
-            flagA = false;
-        }
-    }
-}
-
-void *walkFunc(void* cs)
-{
-    while(running)
-    {
-        if(1)
-        {
-            if (flagWalk == 1)
-            {
-                spiderControl.footWalk(0.8);
-                usleep(250000);
-                spiderControl.footStop();
-                usleep(10000);
-            }    
-            else
-                spiderControl.footStop();
-            flagB = false;
-        }
-    }
-}
-
-//程序终止回调函数
 void clear(int signo)
 {
-    cout << "exit....." << endl;
-    running = 0;
+    std::cout << "Get exit signal" << std::endl;
+    running = false;
+}
+
+void* grabFunc(void* in_data)
+{
+    while(running)
+    {
+        pthread_mutex_lock(&mutexLock);
+        if(camera.isOpened())
+        {
+            camera.grab();
+        }
+        pthread_mutex_unlock(&mutexLock);
+    }
+
+    std::cout << "Grab thread exit." << std::endl;
+}
+
+void init()
+{
+    //摄像头
+    camera.open(0);
+
+    if(!camera.isOpened())
+    {
+        std::cout << "Can not find camera!" << std::endl;
+        exit(-1);
+    }
+
+    camera.set(cv::CAP_PROP_FRAME_WIDTH,160);
+    camera.set(cv::CAP_PROP_FRAME_HEIGHT,120);
+
+    double width = camera.get(cv::CAP_PROP_FRAME_WIDTH);
+    double height = camera.get(cv::CAP_PROP_FRAME_HEIGHT);
+
+    std::cout << "width:" << width << ", ";
+    std::cout << "height:" << height << std::endl;
+
+    running = true;
+    pthread_mutex_init(&mutexLock, NULL);
+    pthread_create(&grabThread, NULL, grabFunc, NULL);
+
+    signal(SIGINT, clear);
+    signal(SIGTERM, clear);
 }
 
 int main()
 {
-    //设置CTRL+C回调
-    signal(SIGINT, clear);
-    signal(SIGTERM, clear);
+    double timeUse;
+    struct timeval startTime, stopTime;
 
-    //初始化摄像头，并减小分辨率
-    capture.set(CAP_PROP_FRAME_WIDTH, 160);
-    capture.set(CAP_PROP_FRAME_HEIGHT, 120);
+    cv::Mat rawImage;
+    cv::Mat grayImage, thresImage, cannyImage;
 
-    img_out = Mat::zeros(Size(320,240), CV_8UC1);
+    double area;
+    bool hasCircles;
+    int targetX, targetY;
+    cv::Mat circleImage(160, 120, CV_8UC1);
+    std::vector<cv::Vec3f> circles;
+    std::vector<std::vector<cv::Point> > contours;
 
-    running = true;
-    pthread_t walkThread, barbetteThread;
-    pthread_create(&walkThread, NULL, walkFunc, NULL);
-    pthread_create(&barbetteThread, NULL, barbetteFunc, NULL);
+    NerfSpiderControl spiderControl;
 
+    init();
 
-    int faceX, faceY;
     while (running)
     {
-        //初始化img_out和读取摄像头
-        img_out.setTo(0);
-        capture.read(img_cam);
+        gettimeofday(&startTime, NULL);
+
+        //初始化outputImage和读取摄像头
+        circleImage.setTo(0);
+        camera.retrieve(rawImage);
 
         //前期处理（灰度、自适应二值化、边缘检测）
-        cvtColor(img_cam, img_gray, COLOR_RGB2GRAY);
-        adaptiveThreshold(img_gray, img_thres, 255, ADAPTIVE_THRESH_GAUSSIAN_C, THRESH_BINARY,201,20);
-        Canny(img_thres, img_canny, 150, 200);
+        cv::cvtColor(rawImage, grayImage, cv::COLOR_RGB2GRAY);
+        cv::adaptiveThreshold(grayImage, thresImage, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY,201,20);
+        cv::Canny(thresImage, cannyImage, 150, 200);
 
         //检测轮廓
-        findContours(img_canny, contours, RETR_TREE, CHAIN_APPROX_SIMPLE);
-        for (i = 0; i < contours.size(); i++)
+        cv::findContours(cannyImage, contours, cv::RETR_TREE, cv::CHAIN_APPROX_SIMPLE);
+        hasCircles = false;
+        for (int i = 0; i < contours.size(); i++)
         {
             //根据轮廓面积初步筛选
-            area = fabs(contourArea(contours[i]));
-            if (area > 150)
+            area = fabs(cv::contourArea(contours[i]));
+            if (area > 200)
             {
                 //绘制轮廓并填充
-                drawContours(img_out, contours, i, Scalar(255, 255, 255), FILLED);
+                cv::drawContours(circleImage, contours, i, cv::Scalar(255, 255, 255), cv::FILLED);
                 //检测是否有圆形
-                HoughCircles(img_out, circles, HOUGH_GRADIENT, 2, img_out.rows / 2, 30, 15);
-                if (circles.size() != 0)
+                cv::HoughCircles(circleImage, circles, cv::HOUGH_GRADIENT, 2, circleImage.rows / 2, 30, 15);
+                if (circles.size() > 0)
                 {
-                    cout << "Find Circles! Area: " << area << endl;
-                    faceX = circles[0][0];
-                    faceY = circles[0][1];
-                    cout << faceX << endl;
-                    cout << faceY << endl;
-                    if(faceX < 35)
-                        flagBarbette = 1;
-                    else if(faceX > 95)
-                        flagBarbette = -1;
-                    else
-                        flagBarbette = 0;
-                    flagWalk = 1;
-                    flagA = true;
-                    flagB = true;
+                    hasCircles = true;
+                    targetX = circles[0][0];
+                    targetY = circles[0][1];
+                    std::cout << "Find Circles! " << std::endl;
+                    std::cout << "Area: " << area << " " << std::endl;
+                    std::cout << "Location: " << targetX << ", " << targetY << std::endl; 
                     break;
                 }
             }
-            flagWalk = 0;
+
         }
+
+        if(hasCircles)
+        {
+            if(targetX < 60)
+            {
+                spiderControl.barbetteRotate(0.5, 1);
+            }
+            else if(targetX > 100)
+            {
+                spiderControl.barbetteRotate(-0.5, 1);
+            }
+
+            spiderControl.footWalk(0.35);
+        }
+        else
+        {
+            std::cout << "No Circles!" << std::endl;
+            spiderControl.footStop();
+        }
+
+        gettimeofday(&stopTime, NULL);
+        timeUse = stopTime.tv_sec - startTime.tv_sec + (stopTime.tv_usec - startTime.tv_usec)/1000000.0;
+        std::cout << "Time: " <<timeUse << std::endl;
+        if(timeUse < 0.1)
+            usleep((0.1 - timeUse) * 1000000);
     }
-    capture.release();
-    cout << "Down!" << endl;
+
+    void* result;
+    pthread_join(grabThread, &result);
+    std::cout << "Program exit!" << std::endl;
+    
     return 0;
 }

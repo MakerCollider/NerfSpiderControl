@@ -1,66 +1,40 @@
 #include <iostream>
 #include <math.h>
 #include <signal.h>
+#include <sys/time.h>
+
 #include "opencv2/opencv.hpp"
+
 #include "NerfSpiderControl.hpp"
 
-//人脸识别相关变量
 cv::VideoCapture camera;
-cv::Mat rawImage, grayImage;
+
 cv::CascadeClassifier face_cascade;
 std::string face_cascade_name;
-std::vector<cv::Rect> faces;
-bool running = false, flagA = false, flagB = false;
-int flagWalk=0, flagBarbette=0;
 
-NerfSpiderControl spiderControl;
+bool running;
+pthread_t grabThread;
+pthread_mutex_t mutexLock;
 
 void clear(int signo)
 {
-    std::cout << "exit....." << std::endl;
+    std::cout << "Get exit signal" << std::endl;
     running = false;
-    camera.release();
-    rawImage.release();
-    grayImage.release();
-    std::cout << "down!\n" << std::endl;;
-    exit(0);
 }
 
-void *barbetteFunc(void* cs)
+void* grabFunc(void* in_data)
 {
     while(running)
     {
-        if(flagA)
+        pthread_mutex_lock(&mutexLock);
+        if(camera.isOpened())
         {
-            if(flagBarbette == 1)
-                spiderControl.barbetteRotate(1, 1);
-            else if(flagBarbette == -1)
-                spiderControl.barbetteRotate(-1, 1);
-            else
-                spiderControl.barbetteStop();
-            flagA = false;
+            camera.grab();
         }
+        pthread_mutex_unlock(&mutexLock);
     }
-}
 
-void *walkFunc(void* cs)
-{
-    while(running)
-    {
-        if(0)
-        {
-            if (flagWalk == 1)
-            {
-                spiderControl.footWalk(0.8);
-                usleep(250000);
-                spiderControl.footStop();
-                usleep(100000);
-            }    
-            else
-                spiderControl.footStop();
-            flagB = false;
-        }
-    }
+    std::cout << "Grab thread exit." << std::endl;
 }
 
 void init()
@@ -70,7 +44,7 @@ void init()
 
     if(!camera.isOpened())
     {
-        std::cout << "can not find camera!" << std::endl;
+        std::cout << "Can not find camera!" << std::endl;
         exit(-1);
     }
 
@@ -83,7 +57,6 @@ void init()
     std::cout << "width:" << width << "\t";
     std::cout << "height:" << height << "\t" << std::endl;
 
-    //人脸识别
     face_cascade_name = "/usr/share/OpenCV/haarcascades/haarcascade_frontalface_alt.xml";
 
     if(!face_cascade.load(face_cascade_name))
@@ -93,9 +66,8 @@ void init()
     }
 
     running = true;
-    pthread_t walkThread, barbetteThread;
-    pthread_create(&walkThread, NULL, walkFunc, NULL);
-    pthread_create(&barbetteThread, NULL, barbetteFunc, NULL);
+    pthread_mutex_init(&mutexLock, NULL);
+    pthread_create(&grabThread, NULL, grabFunc, NULL);
 
     signal(SIGINT, clear);
     signal(SIGTERM, clear);
@@ -103,47 +75,62 @@ void init()
 
 int main()
 {
-    std::cout << "Camera FaceDetect" << std::endl;
+    double timeUse;
+    struct timeval startTime, stopTime;
+
+    cv::Mat rawImage, grayImage;
+    std::vector<cv::Rect> faces;
+
+    NerfSpiderControl spiderControl;
+
     init();
 
     float faceX, faceY;
-    while(1)
+    while(running)
     {
-        camera >> rawImage;
+        gettimeofday(&startTime, NULL);
 
-        //cv::resize(rawImage,rawImage,cv::Size(128,96));
-
+        camera.retrieve(rawImage);
         cv::cvtColor(rawImage, grayImage, cv::COLOR_BGR2GRAY);
         cv::equalizeHist(grayImage, grayImage);
 
         faces.clear();
-
         face_cascade.detectMultiScale(grayImage, faces, 1.1,
             2, 0|cv::CASCADE_SCALE_IMAGE, cv::Size(30, 30));
         if(faces.empty())
         {
-            std::cout << "face lost!" << std::endl;
-            flagBarbette = 0;
-            flagWalk = 0;
+            std::cout << "Face lost!" << std::endl;
+            spiderControl.footStop();
         }
         else
         {
-            std::cout << "face detect!" << faces.size() << std::endl;
+            std::cout << "Face detect!" << faces.size() << std::endl;
             faceX = faces[0].x+faces[0].width*0.5;
             faceY = faces[0].y+faces[0].height*0.5;
-            std::cout << "First face location: ";
-            std::cout << faceX << "\t" << faceY << std::endl;
-            if(faceX < 60)
-                flagBarbette = 1;
-            else if(faceX > 100)
-                flagBarbette = -1;
-            else
-                flagBarbette = 0;
-            flagWalk = 1;
+            std::cout << "First face location: " << faceX << ", " << faceY << std::endl;
+
+            if(faceX < 70)
+            {
+                spiderControl.barbetteRotate(0.5, 1);
+            }
+            else if(faceX > 90)
+            {
+                spiderControl.barbetteRotate(-0.5, 1);
+            }
+
+            spiderControl.footWalk(0.35);
         }
-        flagA = true;
-        flagB = true;
+
+        gettimeofday(&stopTime, NULL);
+        timeUse = stopTime.tv_sec - startTime.tv_sec + (stopTime.tv_usec - startTime.tv_usec)/1000000.0;
+        std::cout << "Time: " <<timeUse << std::endl;
+        if(timeUse < 0.25)
+            usleep((0.25 - timeUse) * 1000000);
     }
+
+    void* result;
+    pthread_join(grabThread, &result);
+    std::cout << "Program exit!" << std::endl;
 
     return 0;
 }

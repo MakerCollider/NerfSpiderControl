@@ -91,6 +91,9 @@ NerfSpiderControl::NerfSpiderControl()
 
 NerfSpiderControl::~NerfSpiderControl()
 {
+    running = false;
+    void *result;
+    pthread_join(m_encoderThread, &result);
     barbetteStop();
     footStop();
     shootAllStop();
