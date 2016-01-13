@@ -111,14 +111,14 @@ int main()
 
             if(faceX < 70)
             {
-                spiderControl.barbetteRotate(0.5, 1);
+                spiderControl.barbetteRotate(0.7, 3);
             }
             else if(faceX > 90)
             {
-                spiderControl.barbetteRotate(-0.5, 1);
+                spiderControl.barbetteRotate(-0.7, 3);
             }
 
-            spiderControl.footWalk(0.35);
+            spiderControl.footWalk(0.8);
         }
 
         gettimeofday(&stopTime, NULL);

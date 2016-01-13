@@ -125,14 +125,14 @@ int main()
         {
             if(targetX < 60)
             {
-                spiderControl.barbetteRotate(0.5, 1);
+                spiderControl.barbetteRotate(0.7, 2);
             }
             else if(targetX > 100)
             {
-                spiderControl.barbetteRotate(-0.5, 1);
+                spiderControl.barbetteRotate(-0.7, 2);
             }
 
-            spiderControl.footWalk(0.35);
+            spiderControl.footWalk(0.8);
         }
         else
         {
